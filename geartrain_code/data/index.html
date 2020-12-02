@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+
+<html>
+
+<head>
+  <title> GearTrain 5.3v-beta </title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+</head>
+
+<body>
+  <button id="start_program"> Start! </button>
+  <p id="program_stat">0</p>
+  <br />
+  <button id="enable_fans"> Fans Start! </button>
+  <br />
+  <button id="enable_motor"> Motor Start! </button>
+  <br />
+  <button id="motor_dir"> Switch Motor Direction! </button>
+  <br />
+  <button id="plus_pwm" onclick="addPwm()">+</button><button id="minus_pwm" onclick="subPwm()">-</button>
+  <br />
+  <p id="val_pwm">0</p>
+  <br />
+  <button id="led_state"> Change LED State! </button>
+  <br />
+
+  <table>
+    <tr>
+      <th> Temperature </th>
+      <td id="temp">0.00 °C</td>
+    </tr>
+    <tr>
+      <th> Humidity </th>
+      <td id="hum">0.00 %</td>
+    </tr>
+    <tr>
+      <th> Error Code </th>
+      <td id="errCode">NE</td>
+    </tr>
+    <tr>
+      <th> RPM </th>
+      <td id="rpmval"></td>
+    </tr>
+  </table>
+
+
+  <script src="script.js"></script>
+</body>
+
+
+</html>
