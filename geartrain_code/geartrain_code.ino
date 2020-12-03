@@ -12,11 +12,17 @@
 #include <SPIFFS.h>
 
 ///// ERROR CODES /////
-#define NO_ERROR        0
-#define DHT_ERROR      15
-#define LCD_CONN_ERROR 64
+#define NO_ERROR         0
+#define DHT_ERROR       15
+#define LCD_CONN_ERROR  64
+#define SPIFFS_ERROR    27
+bool ERROR_STATE = false;
 
-bool ERROR_STATUS = false;
+///// TASKS /////
+TaskHandle_t SetupConnection, SetupControl, TaskConnection, TaskControl;
+bool STATE_CONTROL =    true;
+bool STATE_CONNECTION = true;
+bool PROGRAM_START =    false;
 
 ///// Variables ////////////////////////////////////////////////////////////
 ///// WiFi /////
@@ -27,8 +33,10 @@ const int ledConnection = 2;
 AsyncWebServer server(80);
 AsyncWebSocket ws ("/ws");
 AsyncEventSource events("/events");
+unsigned int connectedClients = 0;
 
 ///// OLED Config /////
+bool LCD_ENABLE = true;
 #define SCREEN_WIDTH  128
 #define SCREEN_HEIGHT  64
 #define OLED_RESET     -1
@@ -54,6 +62,7 @@ int RPM = 0;
 
 ///// DHT /////
 #define DHTTYPE DHT11
+bool DHT_STATE = true;
 const int dhtPin = 32;
 DHT dht(dhtPin, DHTTYPE);
 uint64_t dhtMillis = 5000;
@@ -69,6 +78,7 @@ const int ledBA = 17;
 const int ledBB = 5;
 
 ///// Shift Register /////
+bool SHIFT_ENABLE = false;
 const int dataPin = 27;
 const int clk = 18;
 const int latch = 19;
@@ -94,53 +104,22 @@ const int freqBuzz = 2000;
 const int chBuzz = 1;
 
 ///// Fan Switch /////
+bool FANS = false;
 const int fanSwitch = 12;
 
-void displayError(int error_code)
-{
-  switch (error_code)
-  {
-    case 0:
-      ERROR_STATUS = false;
-      DisplayDigit(0);
-      DisplayDigit(0);
-      ledcWrite(chBuzz, 0);
-      break;
-    case 15:
-      ERROR_STATUS = true;
-      ledcWrite(chMotor, 0);
-      ledcWrite(chBuzz, 100);
-      display.clearDisplay();
-      display.setCursor(0, 0);
-      display.setTextSize(4);
-      display.print("ERROR DHT");
-      display.display();
-      DisplayDigit(5);
-      DisplayDigit(1);
-      break;
-    case 64:
-      ERROR_STATUS = true;
-      ledcWrite(chMotor, 0);
-      ledcWrite(chBuzz, 100);
-      display.clearDisplay();
-      display.setCursor(0, 0);
-      display.setTextSize(4);
-      display.print("ERROR OLED");
-      display.display();
-      DisplayDigit(4);
-      DisplayDigit(6);
-      break;
-    default:
-      ledcWrite(chBuzz, 100);
-      return;
-  }
-
-}
+///// PROGRAM //////////////////////////////////////////////////////////////////
 
 void enc_Event() { encoderCounter++; }
 
+void buzzerSound(int code)
+{
+
+}
+
 void DisplayDigit(int Digit)
 {
+    if(!SHIFT_ENABLE) { return; }
+
     digitalWrite(latch, LOW);
     for (int i = 7; i>=0; i--)
    {
@@ -149,13 +128,129 @@ void DisplayDigit(int Digit)
     if (digits[Digit][i]==0) digitalWrite(dataPin, LOW);
     digitalWrite(clk,HIGH);
    }
-   digitalWrite(latch, HIGH);;
+   digitalWrite(latch, HIGH);
 }
 
-void setPinModes()
+void displayError(int error_code)
 {
+  switch (error_code)
+  {
+    case 0:
+      ERROR_STATE = false;
+      DisplayDigit(0);
+      DisplayDigit(0);
+      ledcWrite(chBuzz, 0);
+      break;
+    case 15:
+      ERROR_STATE = true;
+      ledcWrite(chMotor, 0);
+      ledcWrite(chBuzz, 100);
+      DisplayDigit(5);
+      DisplayDigit(1);
+      if(!LCD_ENABLE) { break; }
+      display.clearDisplay();
+      display.setCursor(0, 0);
+      display.setTextSize(4);
+      display.print("ERROR DHT");
+      display.display();
+      buzzerSound(1);
+      break;
+    case 64:
+      ERROR_STATE = true;
+      DisplayDigit(4);
+      DisplayDigit(6);
+      ledcWrite(chMotor, 0);
+      ledcWrite(chBuzz, 100);
+      buzzerSound(2);
+      break;
+    default:
+      DisplayDigit(8);
+      DisplayDigit(8);
+      buzzerSound(666);
+  }
+}
+
+int testDHT()
+{
+  hum = dht.readHumidity();
+  temp = dht.readTemperature();
+
+  if(isnan(hum) || isnan(temp))
+  {
+    return 0;
+  }
+
+  else
+    return 1;
+}
+
+void onEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len)
+{
+    switch (type)
+    {
+      case WS_EVT_CONNECT:
+        Serial.printf("WebSocket client #%u connected from %s\n", client->id(), client->remoteIP().toString().c_str());
+        connectedClients++;
+        break;
+      case WS_EVT_DISCONNECT:
+        Serial.println("Disconnected");
+        connectedClients--;
+        break;
+      case WS_EVT_DATA:
+        handleWebSocketMessage(arg, data, len);
+        break;
+      case WS_EVT_PONG:
+        break;
+      case WS_EVT_ERROR:
+         Serial.printf("ws[%s][%u] error(%u): %s\n", server->url(), client->id(), *((uint16_t*)arg), (char*)data);
+        break;
+    }
+}
+
+void handleWebSocketMessage(void *arg, uint8_t *data, size_t len)
+{
+  AwsFrameInfo *info = (AwsFrameInfo*)arg;
+  if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT)
+  {
+    data[len] = 0;
+///// Start Program
+    if (strcmp((char*)data, "prgStart") == 0) { PROGRAM_START = true; }
+///// Skip Error
+    else if(strcmp((char*)data, "skipErr") == 0) { ERROR_STATE = false; }
+///// Add PWM
+    else if(strcmp((char*)data, "pwmadd") == 0){
+      if (pwmval > 240) { return; }
+      pwmval = pwmval+15;
+      Serial << "PWM: " << pwmval << endl;
+      events.send(String(pwmval).c_str(), "updatePWM");
+      ledcWrite(chMotor, pwmval);
+    }
+///// Substract PWM
+    else if(strcmp((char*)data, "pwmsub") == 0){
+      if (pwmval < 15) { return; }
+      pwmval = pwmval-15;
+      Serial << "PWM: " << pwmval << endl;
+      events.send(String(pwmval).c_str(), "updatePWM");
+      ledcWrite(chMotor, pwmval);
+    }
+  }
+}
+
+///// SETUP CORES //////////////////////////////////////////////////////////////
+
+void setupControl( void * parameter )
+{
+  ///// SET PIN MODES /////
   const int pinArrayOut[14] = {25,26,4,16,17,5,18,19,27,2,14,12,15,0};
   for (int i=0; i<14; i++) { pinMode(pinArrayOut[i], OUTPUT); }
+
+  digitalWrite(resetMaster, LOW);
+  digitalWrite(enableRegisterOutput, HIGH);
+  digitalWrite(fanSwitch, LOW);
+  digitalWrite(ledFA, LOW);
+  digitalWrite(ledFB, LOW);
+  digitalWrite(ledBA, LOW);
+  digitalWrite(ledBB, LOW);
 
   ledcSetup(chMotor, freqMotor, resPWM);
   ledcAttachPin(en, chMotor);
@@ -163,13 +258,19 @@ void setPinModes()
   ledcAttachPin(buzz, chBuzz);
 
   pinMode(encoder, INPUT);
-  attachInterrupt(digitalPinToInterrupt(encoder), enc_Event, RISING);
-}
 
-void initMod()
-{
+  ///// START OLED AND DHT /////
   if(!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDRESS))
-  { displayError(LCD_CONN_ERROR); for(;;);}
+  { displayError(LCD_CONN_ERROR); ERROR_STATE = true; }
+
+  while(ERROR_STATE) { LCD_ENABLE = false; }
+
+  dht.begin();
+  if(!testDHT())
+  { displayError(DHT_ERROR); ERROR_STATE = true; }
+
+  while(ERROR_STATE) { DHT_STATE = false; }
+
 
   display.clearDisplay();
   display.setTextSize(2);
@@ -178,82 +279,45 @@ void initMod()
 
   display.println("GearTrain");
   display.print("v5.3-beta");
-
   display.display();
 
-  dht.begin();
+  delay(2000);
+
+  display.clearDisplay();
+  display.println("Loading Setup...");
+
+  delay(2000);
+
+  while(!PROGRAM_START);
+
+  xTaskCreatePinnedToCore(
+    loopControl,
+    "LoopControl",
+    1000,
+    NULL,
+    2,
+    &TaskControl,
+    1);
+
+  Serial << "Finishing Control Setup" << endl;
+  vTaskDelete(NULL);
 }
 
-void initWebSocket() {
-  ws.onEvent(onEvent);
-  server.addHandler(&ws);
-  server.addHandler(&events);
-}
-
-void onEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type,
-  void *arg, uint8_t *data, size_t len) {
-
-    switch (type) {
-      case WS_EVT_CONNECT:
-        Serial.printf("WebSocket client #%u connected from %s\n", client->id(), client->remoteIP().toString().c_str());
-        break;
-      case WS_EVT_DISCONNECT:
-        Serial.println("Disconnected");
-        break;
-      case WS_EVT_DATA:
-        handleWebSocketMessage(arg, data, len);
-        break;
-      case WS_EVT_PONG:
-        break;
-      case WS_EVT_ERROR:
-        break;
-    }
-}
-
-void handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
-  AwsFrameInfo *info = (AwsFrameInfo*)arg;
-  if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
-    data[len] = 0;
-    if (strcmp((char*)data, "test") == 0){
-
-    }
-    else if(strcmp((char*)data, "pwmadd") == 0){
-      if (pwmval > 230) { return; }
-      pwmval = pwmval+25;
-      Serial << "PWM: " << pwmval << endl;
-      events.send(String(pwmval).c_str(), "updatePWM");
-      ledcWrite(chMotor, pwmval);
-    }
-    else if(strcmp((char*)data, "pwmsub") == 0){
-      if (pwmval < 25) { return; }
-      pwmval = pwmval-25;
-      Serial << "PWM: " << pwmval << endl;
-      events.send(String(pwmval).c_str(), "updatePWM");
-      ledcWrite(chMotor, pwmval);
-    }
-  }
-
-  Serial.println(xPortGetCoreID());
-}
-
-void setup()
+void setupConnection ( void * parameter )
 {
-
-  Serial.begin(115200);
-
-  if(!SPIFFS.begin())
-  { Serial << "Error SPIFFS" << endl; return;}
-
-  WiFi.begin(ssid, password);
   while(WiFi.status() != WL_CONNECTED)
   {
     delay(1000);
     Serial << "Connecting to WiFi: " << ssid << endl;
   }
 
-  Serial << WiFi.localIP() << endl;
+  buzzerSound(0);
 
-  initWebSocket();
+  ws.onEvent(onEvent);
+  server.addHandler(&ws);
+  server.addHandler(&events);
+
+  Serial << WiFi.localIP() << endl;
 
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(SPIFFS, "/index.html", "text/html");
@@ -264,56 +328,133 @@ void setup()
   });
   server.begin();
 
-  setPinModes();
-  initMod();
-  displayError(NO_ERROR);
+  delay(4000);
 
-  delay(3000);
-
-  digitalWrite(inA, HIGH);
-  digitalWrite(inB, LOW);
-  ledcWrite(chMotor, 0);
-}
-
-void loop()
-{
-  currentMillis = esp_timer_get_time();
-
-  if(currentMillis-refMillis>=timediff)
+  /*while(!PROGRAM_START)
   {
-    RPM = encoderCounter/11*2;
-    refMillis = currentMillis;
-    encoderCounter = 0;
-    events.send(String(RPM).c_str(), "rpm");
-  }
+    Serial.println("HELLO");
 
-  if(currentMillis-dhtMillis>=dhtTime)
-  {
-    dhtMillis = currentMillis;
-
-    hum = dht.readHumidity();
-    temp = dht.readTemperature();
-
-    if(isnan(hum) || isnan(temp))
+    if (LCD_ENABLE)
     {
-      displayError(DHT_ERROR);
-      return;
+      //display.clearDisplay();
+      //display.print("IP: ");
+      //display.println(WiFi.localIP());
+      //display.print("Connections: ");
+      //display.println(connectedClients);
     }
+  }*/
 
-    if(ERROR_STATUS==true) { displayError(0); }
-    events.send(String(hum).c_str(), "humidity");
-    events.send(String(temp).c_str(), "temperature");
+  xTaskCreatePinnedToCore(
+    loopConnection,
+    "LoopConnection",
+    1000,
+    NULL,
+    2,
+    &TaskConnection,
+    0);
 
-    display.setTextSize(2);
-    display.clearDisplay();
-    display.setCursor(0, 0);
-    display.print("Temp:");
-    display.println(temp);
-    display.print("Hum:");
-    display.println(hum);
-    display.print("RPM:");
-    display.println(RPM);
+  /*if(!SPIFFS.begin())
+  {
+    displayError(SPIFFS_ERROR);
+    ERROR_STATE = true;
+    exit(-1);
+  }  */
 
-    display.display();
+  Serial << "Finishing Connection Setup!!" << endl;
+  vTaskDelete(NULL);
+}
+
+
+///////// TASK LOOPS ///////////////////////////////////////////////////////////
+
+void loopControl( void * parameter )
+{
+  while(STATE_CONTROL)
+  {
+
   }
 }
+
+void loopConnection( void * parameter )
+{
+  for(;;)
+  {
+
+  }
+}
+
+
+///////////START SETUP//////////////////////////////////////////////////////////
+
+void setup()
+{
+  Serial.begin(115200);
+
+  /*xTaskCreatePinnedToCore(
+    setupControl,
+    "SetupControl",
+    1000,
+    NULL,
+    1,
+    &SetupControl,
+    1);
+
+  attachInterrupt(digitalPinToInterrupt(encoder), enc_Event, RISING);*/
+
+
+  WiFi.begin(ssid, password);
+  xTaskCreatePinnedToCore(
+    setupConnection,
+    "SetupConnection",
+    1000,
+    NULL,
+    1,
+    &SetupConnection,
+    0);
+}
+
+///// DEFAULT LOOP /////
+void loop(){}
+////////////////////////
+
+
+/*currentMillis = esp_timer_get_time();
+
+if(currentMillis-refMillis>=timediff)
+{
+  RPM = encoderCounter/11*2;
+  refMillis = currentMillis;
+  encoderCounter = 0;
+  events.send(String(RPM).c_str(), "rpm");
+}
+
+if(currentMillis-dhtMillis>=dhtTime)
+{
+  dhtMillis = currentMillis;
+
+  hum = dht.readHumidity();
+  temp = dht.readTemperature();
+
+  if(isnan(hum) || isnan(temp))
+  {
+    displayError(DHT_ERROR);
+    return;
+  }
+
+  if(ERROR_STATE==true) { displayError(0); }
+  events.send(String(hum).c_str(), "humidity");
+  events.send(String(temp).c_str(), "temperature");
+
+  display.setTextSize(2);
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  display.print("Temp:");
+  display.println(temp);
+  display.print("Hum:");
+  display.println(hum);
+  display.print("RPM:");
+  display.println(RPM);
+
+  display.display();
+}
+*/
