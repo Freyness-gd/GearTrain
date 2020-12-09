@@ -28,8 +28,8 @@ bool SPIFFS_OK = true;
 
 ///// Variables ////////////////////////////////////////////////////////////
 ///// WiFi /////
-const char* ssid = "A1-AP1";
-const char* password = "WireLeSS3865@!";
+const char* ssid = "Konditorei_5";
+const char* password = "bagpulainalex1234";
 const int ledConnection = 2;
 ///// AsyncWebServer /////
 AsyncWebServer server(80);
@@ -427,7 +427,7 @@ void setupControl()
     display.setTextColor(SSD1306_WHITE);
     display.cp437(true);
     display.clearDisplay();
-    display.println("Loading Control Setup...");
+    display.println("Loading...");
     display.display();
   }
 
@@ -452,7 +452,7 @@ void setupConnection ()
   if(LCD_ENABLE)
   {
     display.clearDisplay();
-    display.println("Loading Connection Setup...");
+    display.println("Loading...");
   }
 
   while(WiFi.status() != WL_CONNECTED)
@@ -492,11 +492,13 @@ void loopControl( void * parameter )
       display.setTextSize(2);
       display.setCursor(0, 0);
       display.clearDisplay();
-      display.print("IP: ");
+      display.println("IP: ");
       display.println(WiFi.localIP());
       display.display();
-      delay(300);
     }
+
+    display.clearDisplay();
+    display.display();
 
     currentMicros = esp_timer_get_time();
     if(currentMicros-refEncMicros>=timeDiffEnc) { getRPM(); }
